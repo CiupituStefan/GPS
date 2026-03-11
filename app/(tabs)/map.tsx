@@ -1,36 +1,56 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocation } from '../../hooks/useLocation';
 import { formatDecimal, formatAccuracy, formatAltitude, formatSpeed } from '../../utils/formatters';
-import MapView, { Marker, Circle, PROVIDER_DEFAULT } from 'react-native-maps';
+import { generateMapHtml } from '../../utils/mapHtml';
+
+// Conditionally import WebView only on native
+let WebView: any = null;
+if (Platform.OS !== 'web') {
+  WebView = require('react-native-webview').default;
+}
 
 export default function MapScreen() {
   const { latitude, longitude, accuracy, altitude, speed, isLoading, gpsEnabled, error, refreshLocation } = useLocation();
-  const mapRef = useRef<MapView>(null);
-  const [mapType, setMapType] = useState<'standard' | 'satellite' | 'hybrid'>('standard');
+  const webViewRef = useRef<any>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
+  const [mapReady, setMapReady] = useState(false);
+
+  // Send position updates to the map
+  const sendMessage = useCallback((message: object) => {
+    const json = JSON.stringify(message);
+    if (Platform.OS === 'web') {
+      if (iframeRef.current?.contentWindow) {
+        iframeRef.current.contentWindow.postMessage(json, '*');
+      }
+    } else {
+      webViewRef.current?.postMessage(json);
+    }
+  }, []);
+
+  // Update marker position when coordinates change
+  useEffect(() => {
+    if (latitude && longitude && mapReady) {
+      sendMessage({
+        type: 'updatePosition',
+        lat: latitude,
+        lng: longitude,
+        accuracy: accuracy || 10,
+        center: true,
+      });
+    }
+  }, [latitude, longitude, accuracy, mapReady, sendMessage]);
 
   const centerOnUser = () => {
-    if (latitude && longitude && mapRef.current) {
-      mapRef.current.animateToRegion(
-        {
-          latitude,
-          longitude,
-          latitudeDelta: 0.005,
-          longitudeDelta: 0.005,
-        },
-        800
-      );
-    }
+    sendMessage({ type: 'centerOnUser' });
   };
 
   const toggleMapType = () => {
-    setMapType(prev => {
-      if (prev === 'standard') return 'satellite';
-      if (prev === 'satellite') return 'hybrid';
-      return 'standard';
-    });
+    sendMessage({ type: 'toggleMapType' });
+    setMapType(prev => (prev === 'standard' ? 'satellite' : 'standard'));
   };
 
   if (isLoading && !latitude) {
@@ -64,52 +84,76 @@ export default function MapScreen() {
     );
   }
 
+  const mapHtml = generateMapHtml(latitude || 47.64, longitude || 26.24);
+
+  const renderMap = () => {
+    if (Platform.OS === 'web') {
+      // Web: use iframe with Blob URL
+      const blob = new Blob([mapHtml], { type: 'text/html' });
+      const blobUrl = URL.createObjectURL(blob);
+      return (
+        <iframe
+          ref={iframeRef as any}
+          src={blobUrl}
+          onLoad={() => {
+            setMapReady(true);
+            // Send initial position after iframe loads
+            setTimeout(() => {
+              if (latitude && longitude) {
+                sendMessage({
+                  type: 'updatePosition',
+                  lat: latitude,
+                  lng: longitude,
+                  accuracy: accuracy || 10,
+                  center: true,
+                });
+              }
+            }, 500);
+          }}
+          style={{
+            flex: 1,
+            width: '100%',
+            height: '100%',
+            border: 'none',
+          }}
+          allow="geolocation"
+        />
+      );
+    }
+
+    // Native: use react-native-webview
+    return (
+      <WebView
+        ref={webViewRef}
+        source={{ html: mapHtml }}
+        style={{ flex: 1 }}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        originWhitelist={['*']}
+        onLoad={() => {
+          setMapReady(true);
+          // Send initial position after WebView loads
+          setTimeout(() => {
+            if (latitude && longitude) {
+              sendMessage({
+                type: 'updatePosition',
+                lat: latitude,
+                lng: longitude,
+                accuracy: accuracy || 10,
+                center: true,
+              });
+            }
+          }, 500);
+        }}
+        onError={() => setMapReady(false)}
+      />
+    );
+  };
+
   return (
     <View className="flex-1 bg-slate-950">
       {/* Map */}
-      <MapView
-        ref={mapRef}
-        className="flex-1"
-        provider={PROVIDER_DEFAULT}
-        mapType={mapType}
-        showsUserLocation={false}
-        showsMyLocationButton={false}
-        showsCompass={true}
-        showsScale={true}
-        initialRegion={{
-          latitude: latitude || 47.64,
-          longitude: longitude || 26.24,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        }}
-      >
-        {latitude && longitude && (
-          <>
-            {/* Accuracy circle */}
-            {accuracy && (
-              <Circle
-                center={{ latitude, longitude }}
-                radius={accuracy}
-                fillColor="rgba(59, 130, 246, 0.1)"
-                strokeColor="rgba(59, 130, 246, 0.3)"
-                strokeWidth={1}
-              />
-            )}
-            {/* Location marker */}
-            <Marker
-              coordinate={{ latitude, longitude }}
-              title="Your Location"
-              description={`${formatDecimal(latitude, 6)}, ${formatDecimal(longitude, 6)}`}
-            >
-              <View className="items-center">
-                <View className="w-6 h-6 rounded-full bg-blue-500 border-2 border-white items-center justify-center shadow-lg">
-                  <View className="w-2 h-2 rounded-full bg-white" />
-                </View>
-              </View>
-            </Marker>
-          </>
-        )}
-      </MapView>
+      {renderMap()}
 
       {/* Top info overlay */}
       <SafeAreaView className="absolute top-0 left-0 right-0" edges={['top']}>
@@ -169,7 +213,7 @@ export default function MapScreen() {
           activeOpacity={0.7}
         >
           <MaterialCommunityIcons
-            name={mapType === 'standard' ? 'satellite-variant' : mapType === 'satellite' ? 'layers' : 'map'}
+            name={mapType === 'standard' ? 'satellite-variant' : 'map'}
             size={22}
             color="#94a3b8"
           />
