@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -18,6 +18,28 @@ export default function MapScreen() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
   const [mapReady, setMapReady] = useState(false);
+  const hasCenteredRef = useRef(false);
+
+  // Generate HTML only ONCE with default coordinates — never regenerate
+  const mapHtml = useMemo(() => generateMapHtml(47.64, 26.24), []);
+
+  // For web: create Blob URL once and reuse
+  const blobUrl = useMemo(() => {
+    if (Platform.OS === 'web') {
+      const blob = new Blob([mapHtml], { type: 'text/html' });
+      return URL.createObjectURL(blob);
+    }
+    return null;
+  }, [mapHtml]);
+
+  // Cleanup Blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+      }
+    };
+  }, [blobUrl]);
 
   // Send position updates to the map
   const sendMessage = useCallback((message: object) => {
@@ -31,15 +53,17 @@ export default function MapScreen() {
     }
   }, []);
 
-  // Update marker position when coordinates change
+  // Update marker position when coordinates change — do NOT center (user controls zoom/pan)
   useEffect(() => {
     if (latitude && longitude && mapReady) {
+      const shouldCenter = !hasCenteredRef.current;
+      hasCenteredRef.current = true;
       sendMessage({
         type: 'updatePosition',
         lat: latitude,
         lng: longitude,
         accuracy: accuracy || 10,
-        center: true,
+        center: shouldCenter,
       });
     }
   }, [latitude, longitude, accuracy, mapReady, sendMessage]);
@@ -84,22 +108,18 @@ export default function MapScreen() {
     );
   }
 
-  const mapHtml = generateMapHtml(latitude || 47.64, longitude || 26.24);
-
   const renderMap = () => {
     if (Platform.OS === 'web') {
-      // Web: use iframe with Blob URL
-      const blob = new Blob([mapHtml], { type: 'text/html' });
-      const blobUrl = URL.createObjectURL(blob);
       return (
         <iframe
           ref={iframeRef as any}
-          src={blobUrl}
+          src={blobUrl!}
           onLoad={() => {
             setMapReady(true);
             // Send initial position after iframe loads
             setTimeout(() => {
               if (latitude && longitude) {
+                hasCenteredRef.current = true;
                 sendMessage({
                   type: 'updatePosition',
                   lat: latitude,
@@ -135,6 +155,7 @@ export default function MapScreen() {
           // Send initial position after WebView loads
           setTimeout(() => {
             if (latitude && longitude) {
+              hasCenteredRef.current = true;
               sendMessage({
                 type: 'updatePosition',
                 lat: latitude,
