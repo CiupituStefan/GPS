@@ -42,15 +42,9 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install
 
-      - name: Bundle JavaScript for Android
+      - name: Enable JS bundling in debug build
         run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.ts \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/
+          sed -i 's/react {/react {\n    bundleInDebug = true/' android/app/build.gradle
 
       - name: Build debug APK
         working-directory: android
